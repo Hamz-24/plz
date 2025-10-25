@@ -4,18 +4,22 @@ import { google } from "@ai-sdk/google";
 import { db } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
+// ✅ CORS headers
+const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+// ✅ Handle OPTIONS requests globally
+export async function OPTIONS() {
+    return new NextResponse(null, { status: 204, headers: corsHeaders });
+}
+
 export async function POST(request: Request) {
-    // Handle CORS preflight
-    if (request.method === "OPTIONS") {
-        return new NextResponse(null, {
-            status: 204,
-            headers: corsHeaders,
-        });
-    }
-
-    const { type, role, level, techstack, amount, userid } = await request.json();
-
     try {
+        const { type, role, level, techstack, amount, userid } = await request.json();
+
         const { text: questions } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
@@ -43,29 +47,22 @@ export async function POST(request: Request) {
 
         await db.collection("interviews").add(interview);
 
-        return new NextResponse(JSON.stringify({ success: true }), {
-            status: 200,
-            headers: corsHeaders,
-        });
+        return new NextResponse(
+            JSON.stringify({ success: true }),
+            { status: 200, headers: corsHeaders }
+        );
     } catch (error) {
         console.error("Error:", error);
-        return new NextResponse(JSON.stringify({ success: false, error }), {
-            status: 500,
-            headers: corsHeaders,
-        });
+        return new NextResponse(
+            JSON.stringify({ success: false, error: String(error) }),
+            { status: 500, headers: corsHeaders }
+        );
     }
 }
 
 export async function GET() {
-    return new NextResponse(JSON.stringify({ success: true, data: "Thank you!" }), {
-        status: 200,
-        headers: corsHeaders,
-    });
+    return new NextResponse(
+        JSON.stringify({ success: true, message: "API is working fine ✅" }),
+        { status: 200, headers: corsHeaders }
+    );
 }
-
-// Define CORS headers
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
