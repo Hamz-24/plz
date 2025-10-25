@@ -4,24 +4,30 @@ import { google } from "@ai-sdk/google";
 import { db } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
-// ✅ CORS Headers
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    // includes everything Vapi might send
     "Access-Control-Allow-Headers": "*",
 };
 
-// ✅ Handle OPTIONS preflight requests
+// ✅ Handle preflight requests
 export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
-// ✅ POST handler
 export async function POST(request: Request) {
     try {
         const body = await request.json();
-        const { type, role, level, techstack, amount, userid } = body;
+
+        // 🧩 Apply safe defaults (avoid undefined)
+        const {
+            type = "technical",
+            role = "unknown",
+            level = "junior",
+            techstack = "",
+            amount = "5",
+            userid = "anonymous",
+        } = body ?? {};
 
         console.log("📥 Received:", body);
 
@@ -29,16 +35,15 @@ export async function POST(request: Request) {
         const { text: questions } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
-      Prepare questions for a job interview.
-      The job role is ${role}.
-      The job experience level is ${level}.
-      The tech stack used in the job is: ${techstack}.
-      The focus between behavioural and technical questions should lean towards: ${type}.
-      The amount of questions required is: ${amount}.
-      Please return only the questions, without any additional text.
-      The questions are going to be read by a voice assistant so do not use "/" or "*" or any other special characters which might break the voice assistant.
-      Return the questions formatted like this:
-      ["Question 1", "Question 2", "Question 3"]
+        Prepare questions for a job interview.
+        The job role is ${role}.
+        The job experience level is ${level}.
+        The tech stack used in the job is: ${techstack}.
+        The focus between behavioural and technical questions should lean towards: ${type}.
+        The amount of questions required is: ${amount}.
+        Please return only the questions, without any additional text.
+        The questions are going to be read by a voice assistant so do not use "/" or "*" or any other special characters.
+        Return the questions formatted like this: ["Question 1", "Question 2"]
       `,
         });
 
@@ -55,14 +60,16 @@ export async function POST(request: Request) {
                 .filter(Boolean);
         }
 
-        // ✅ Create interview object
+        // ✅ Create interview object (safe)
         const interview = {
-            role: role || "unknown",
-            type: type || "technical",
-            level: level || "junior",
-            techstack: techstack ? techstack.split(",").map((t: string) => t.trim()) : [],
+            role,
+            type,
+            level,
+            techstack: typeof techstack === "string"
+                ? techstack.split(",").map((t) => t.trim())
+                : [],
             questions: parsedQuestions,
-            userId: userid || "anonymous",
+            userId: userid,
             finalized: true,
             coverImage: getRandomInterviewCover(),
             createdAt: new Date().toISOString(),
@@ -72,10 +79,10 @@ export async function POST(request: Request) {
 
         await db.collection("interviews").add(interview);
 
-        return new NextResponse(JSON.stringify({ success: true, data: interview }), {
-            status: 200,
-            headers: corsHeaders,
-        });
+        return new NextResponse(
+            JSON.stringify({ success: true, data: interview }),
+            { status: 200, headers: corsHeaders }
+        );
     } catch (error: any) {
         console.error("❌ Error in /vapi/generate:", error);
         return new NextResponse(
@@ -90,7 +97,6 @@ export async function POST(request: Request) {
     }
 }
 
-// ✅ GET handler (health check)
 export async function GET() {
     return new NextResponse(
         JSON.stringify({
