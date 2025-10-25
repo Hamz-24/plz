@@ -1,110 +1,51 @@
-import { NextResponse } from "next/server";
 import { generateText } from "ai";
 import { google } from "@ai-sdk/google";
+
 import { db } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
 export async function POST(request: Request) {
-    // 🧠 Parse JSON body safely
-    let body: any;
-    try {
-        body = await request.json();
-        console.log("📥 Request body:", body);
-    } catch (err) {
-        console.error("❌ Invalid JSON body:", err);
-        return NextResponse.json(
-            { success: false, error: "Invalid JSON body" },
-            { status: 400 }
-        );
-    }
+    const { type, role, level, techstack, amount, userid } = await request.json();
 
-    // ✅ Default fallback values (so nothing is undefined)
-    const {
-        type = "technical",
-        role = "unknown",
-        level = "junior",
-        techstack = "",
-        amount = "5",
-        userid = "anonymous",
-    } = body ?? {};
-
-    // ⚙️ Generate questions
-    let questionsRaw = "";
     try {
-        const { text } = await generateText({
+        const { text: questions } = await generateText({
             model: google("gemini-2.0-flash-001"),
-            prompt: `
-        Prepare questions for a job interview.
-        Role: ${role}, Level: ${level}, Tech Stack: ${techstack},
-        Type: ${type}, Amount: ${amount}.
-        Return questions like ["Q1", "Q2"] only.
-      `,
+            prompt: `Prepare questions for a job interview.
+        The job role is ${role}.
+        The job experience level is ${level}.
+        The tech stack used in the job is: ${techstack}.
+        The focus between behavioural and technical questions should lean towards: ${type}.
+        The amount of questions required is: ${amount}.
+        Please return only the questions, without any additional text.
+        The questions are going to be read by a voice assistant so do not use "/" or "*" or any other special characters which might break the voice assistant.
+        Return the questions formatted like this:
+        ["Question 1", "Question 2", "Question 3"]
+        
+        Thank you! <3
+    `,
         });
-        questionsRaw = text ?? "";
-        console.log("🧠 Gemini raw output:", questionsRaw);
-    } catch (err) {
-        console.error("❌ Gemini generateText failed:", err);
-        return NextResponse.json(
-            { success: false, error: "AI generation failed", details: String(err) },
-            { status: 500 }
-        );
-    }
 
-    // 🧩 Parse Gemini output safely
-    let parsedQuestions: string[];
-    try {
-        parsedQuestions = JSON.parse(questionsRaw);
-    } catch {
-        parsedQuestions = questionsRaw
-            .split(/\n+/)
-            .map((q) => q.trim())
-            .filter(Boolean)
-            .map((q) => q.replace(/^\d+\.?\s*/, ""));
-    }
+        const interview = {
+            role: role,
+            type: type,
+            level: level,
+            techstack: techstack.split(","),
+            questions: JSON.parse(questions),
+            userId: userid,
+            finalized: true,
+            coverImage: getRandomInterviewCover(),
+            createdAt: new Date().toISOString(),
+        };
 
-    // 🧱 Build the interview object
-    const interview = {
-        role,
-        type,
-        level,
-        techstack: String(techstack)
-            .split(",")
-            .map((t) => t.trim())
-            .filter(Boolean),
-        questions: parsedQuestions,
-        userId: userid,
-        finalized: true,
-        coverImage: getRandomInterviewCover(),
-        createdAt: new Date().toISOString(),
-    };
+        await db.collection("interviews").add(interview);
 
-    // ✅ Remove any undefined properties (Firestore disallows them)
-    const cleanInterview: Record<string, any> = {};
-    for (const [key, value] of Object.entries(interview)) {
-        if (value !== undefined) cleanInterview[key] = value;
-    }
-
-    // 💾 Save to Firestore
-    try {
-        console.log("💾 Saving interview to Firestore:", cleanInterview);
-        const ref = await db.collection("interviews").add(cleanInterview);
-        return NextResponse.json(
-            { success: true, id: ref.id, data: cleanInterview },
-            { status: 200 }
-        );
-    } catch (err) {
-        console.error("❌ Firestore write failed:", err);
-        return NextResponse.json(
-            { success: false, error: "Firestore write failed", details: String(err) },
-            { status: 500 }
-        );
+        return Response.json({ success: true }, { status: 200 });
+    } catch (error) {
+        console.error("Error:", error);
+        return Response.json({ success: false, error: error }, { status: 500 });
     }
 }
 
-// ✅ Simple health check endpoint
 export async function GET() {
-    return NextResponse.json(
-        { success: true, message: "API is working fine ✅" },
-        { status: 200 }
-    );
+    return Response.json({ success: true, data: "Thank you!" }, { status: 200 });
 }
