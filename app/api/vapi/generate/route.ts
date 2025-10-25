@@ -11,16 +11,17 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-// ✅ Handle OPTIONS requests globally
+// ✅ Handle OPTIONS requests
 export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
+// ✅ POST /vapi/generate
 export async function POST(request: Request) {
     try {
         const { type, role, level, techstack, amount, userid } = await request.json();
 
-        // 🧠 Generate questions
+        // 🧠 Generate questions from Gemini
         const { text: questions } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
       `,
         });
 
-        console.log("📝 Raw AI response:", questions);
+        console.log("🧠 Gemini raw output:", questions);
 
         // ✅ Safe parsing for Gemini output
         let parsedQuestions;
@@ -70,13 +71,18 @@ export async function POST(request: Request) {
     } catch (error) {
         console.error("❌ Error in POST /vapi/generate:", error);
         return new NextResponse(
-            JSON.stringify({ success: false, error: String(error) }),
+            JSON.stringify({
+                success: false,
+                message: "Server crashed",
+                error: String(error),
+                stack: (error as any)?.stack || "No stack trace",
+            }),
             { status: 500, headers: corsHeaders }
         );
     }
 }
 
-// ✅ Simple health check
+// ✅ GET /vapi/generate (health check)
 export async function GET() {
     return new NextResponse(
         JSON.stringify({ success: true, message: "API is working fine ✅" }),
