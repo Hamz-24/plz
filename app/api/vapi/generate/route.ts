@@ -20,6 +20,7 @@ export async function POST(request: Request) {
     try {
         const { type, role, level, techstack, amount, userid } = await request.json();
 
+        // 🧠 Generate questions
         const { text: questions } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
@@ -33,26 +34,41 @@ export async function POST(request: Request) {
       `,
         });
 
+        console.log("📝 Raw AI response:", questions);
+
+        // ✅ Safe parsing for Gemini output
+        let parsedQuestions;
+        try {
+            parsedQuestions = JSON.parse(questions);
+        } catch {
+            parsedQuestions = questions
+                .split(/\n+/)
+                .filter(q => q.trim().length > 0)
+                .map(q => q.replace(/^\d+\.?\s*/, "").trim());
+        }
+
+        // ✅ Create interview object
         const interview = {
             role,
             type,
             level,
-            techstack: techstack.split(","),
-            questions: JSON.parse(questions),
+            techstack: techstack.split(",").map(t => t.trim()),
+            questions: parsedQuestions,
             userId: userid,
             finalized: true,
             coverImage: getRandomInterviewCover(),
             createdAt: new Date().toISOString(),
         };
 
+        // ✅ Save to Firestore
         await db.collection("interviews").add(interview);
 
         return new NextResponse(
-            JSON.stringify({ success: true }),
+            JSON.stringify({ success: true, data: interview }),
             { status: 200, headers: corsHeaders }
         );
     } catch (error) {
-        console.error("Error:", error);
+        console.error("❌ Error in POST /vapi/generate:", error);
         return new NextResponse(
             JSON.stringify({ success: false, error: String(error) }),
             { status: 500, headers: corsHeaders }
@@ -60,6 +76,7 @@ export async function POST(request: Request) {
     }
 }
 
+// ✅ Simple health check
 export async function GET() {
     return new NextResponse(
         JSON.stringify({ success: true, message: "API is working fine ✅" }),
