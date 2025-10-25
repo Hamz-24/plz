@@ -4,31 +4,21 @@ import { google } from "@ai-sdk/google";
 import { db } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
-// ✅ CORS headers
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-export async function OPTIONS() {
-    return new NextResponse(null, { status: 204, headers: corsHeaders });
-}
-
 export async function POST(request: Request) {
+    // 🧠 Parse JSON body safely
     let body: any;
     try {
         body = await request.json();
         console.log("📥 Request body:", body);
     } catch (err) {
-        console.error("❌ Failed to parse JSON body:", err);
-        return new NextResponse(
-            JSON.stringify({ success: false, error: "Invalid JSON body" }),
-            { status: 400, headers: corsHeaders }
+        console.error("❌ Invalid JSON body:", err);
+        return NextResponse.json(
+            { success: false, error: "Invalid JSON body" },
+            { status: 400 }
         );
     }
 
-    // ✅ Provide defaults so Firestore never sees undefined
+    // ✅ Default fallback values (so nothing is undefined)
     const {
         type = "technical",
         role = "unknown",
@@ -38,7 +28,7 @@ export async function POST(request: Request) {
         userid = "anonymous",
     } = body ?? {};
 
-    // ✅ Generate questions safely
+    // ⚙️ Generate questions
     let questionsRaw = "";
     try {
         const { text } = await generateText({
@@ -54,28 +44,25 @@ export async function POST(request: Request) {
         console.log("🧠 Gemini raw output:", questionsRaw);
     } catch (err) {
         console.error("❌ Gemini generateText failed:", err);
-        return new NextResponse(
-            JSON.stringify({
-                success: false,
-                error: "AI generation failed",
-                details: String(err),
-            }),
-            { status: 500, headers: corsHeaders }
+        return NextResponse.json(
+            { success: false, error: "AI generation failed", details: String(err) },
+            { status: 500 }
         );
     }
 
-    // ✅ Parse questions safely
+    // 🧩 Parse Gemini output safely
     let parsedQuestions: string[];
     try {
         parsedQuestions = JSON.parse(questionsRaw);
     } catch {
         parsedQuestions = questionsRaw
             .split(/\n+/)
-            .filter((q) => q.trim().length > 0)
-            .map((q) => q.replace(/^\d+\.?\s*/, "").trim());
+            .map((q) => q.trim())
+            .filter(Boolean)
+            .map((q) => q.replace(/^\d+\.?\s*/, ""));
     }
 
-    // ✅ Build interview object
+    // 🧱 Build the interview object
     const interview = {
         role,
         type,
@@ -91,37 +78,33 @@ export async function POST(request: Request) {
         createdAt: new Date().toISOString(),
     };
 
-    // ✅ Strip undefined (Firestore disallows them)
+    // ✅ Remove any undefined properties (Firestore disallows them)
     const cleanInterview: Record<string, any> = {};
     for (const [key, value] of Object.entries(interview)) {
         if (value !== undefined) cleanInterview[key] = value;
     }
 
-    // ✅ Save to Firestore
+    // 💾 Save to Firestore
     try {
         console.log("💾 Saving interview to Firestore:", cleanInterview);
-        await db.collection("interviews").add(cleanInterview);
+        const ref = await db.collection("interviews").add(cleanInterview);
+        return NextResponse.json(
+            { success: true, id: ref.id, data: cleanInterview },
+            { status: 200 }
+        );
     } catch (err) {
         console.error("❌ Firestore write failed:", err);
-        return new NextResponse(
-            JSON.stringify({
-                success: false,
-                error: "Firestore write failed",
-                details: String(err),
-            }),
-            { status: 500, headers: corsHeaders }
+        return NextResponse.json(
+            { success: false, error: "Firestore write failed", details: String(err) },
+            { status: 500 }
         );
     }
-
-    return new NextResponse(
-        JSON.stringify({ success: true, data: cleanInterview }),
-        { status: 200, headers: corsHeaders }
-    );
 }
 
+// ✅ Simple health check endpoint
 export async function GET() {
-    return new NextResponse(
-        JSON.stringify({ success: true, message: "API is working fine ✅" }),
-        { status: 200, headers: corsHeaders }
+    return NextResponse.json(
+        { success: true, message: "API is working fine ✅" },
+        { status: 200 }
     );
 }
