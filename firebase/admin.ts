@@ -1,29 +1,27 @@
-import { initializeApp, getApps, cert } from "firebase-admin/app";
+import { cert, getApps, getApp, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
-// Initialize Firebase Admin SDK
-function initFirebaseAdmin() {
-    const apps = getApps();
+// ✅ Initialize only once (singleton-safe for Next.js)
+const app = !getApps().length
+    ? initializeApp({
+        credential: cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+        }),
+    })
+    : getApp();
 
-    if (!apps.length) {
-        initializeApp({
-            credential: cert({
-                projectId: process.env.FIREBASE_PROJECT_ID,
-                clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-                // Replace newlines in the private key (required for multiline env vars)
-                privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-            }),
-        });
-    }
+// ✅ Get Auth and Firestore instances
+export const auth = getAuth(app);
+export const db = getFirestore(app);
 
-    const auth = getAuth();
-    const db = getFirestore();
-
-    // ✅ Global fix: Ignore undefined Firestore values
+// ✅ Apply settings only once
+try {
     db.settings({ ignoreUndefinedProperties: true });
-
-    return { auth, db };
+} catch (err: any) {
+    if (!/settings\(\) can only be called once/.test(err.message)) {
+        console.error("⚠️ Firestore settings error:", err);
+    }
 }
-
-export const { auth, db } = initFirebaseAdmin();

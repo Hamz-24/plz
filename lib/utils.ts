@@ -8,47 +8,40 @@ export function cn(...inputs: ClassValue[]) {
 
 const techIconBaseURL = "https://cdn.jsdelivr.net/gh/devicons/devicon/icons";
 
-// ✅ Normalize tech names like React.js → react, Next.js → nextjs
+/**
+ * ✅ Normalize technology names (React.js → react, Next.js → nextjs, etc.)
+ */
 const normalizeTechName = (tech: string) => {
+    if (!tech) return "";
     const key = tech.toLowerCase().replace(/\.js$/, "").replace(/\s+/g, "");
     return mappings[key as keyof typeof mappings] || key;
 };
 
-// ✅ Check if logo actually exists at the CDN URL
-const checkIconExists = async (url: string) => {
-    try {
-        const response = await fetch(url, { method: "HEAD" });
-        return response.ok;
-    } catch {
-        return false;
-    }
-};
-
-// ✅ SAFE VERSION (prevents undefined .map crash)
+/**
+ * ✅ Return technology logo URLs safely.
+ * Prevents crashes and avoids network calls for missing icons.
+ */
 export const getTechLogos = async (techArray?: string[]) => {
+    // 🔒 Prevents `.map` crash if undefined or empty
     if (!Array.isArray(techArray) || techArray.length === 0) {
-        return []; // Prevents crashes on undefined / empty
+        return [];
     }
 
-    const logoURLs = techArray.map((tech) => {
+    // ✅ Map technologies to CDN URLs, fallback to local icon
+    return techArray.map((tech) => {
         const normalized = normalizeTechName(tech);
         return {
-            tech,
-            url: `${techIconBaseURL}/${normalized}/${normalized}-original.svg`,
+            tech: tech || "Unknown",
+            url: normalized
+                ? `${techIconBaseURL}/${normalized}/${normalized}-original.svg`
+                : "/tech.svg", // fallback for unrecognized tech
         };
     });
-
-    const results = await Promise.all(
-        logoURLs.map(async ({ tech, url }) => ({
-            tech,
-            url: (await checkIconExists(url)) ? url : "/tech.svg",
-        }))
-    );
-
-    return results;
 };
 
-// ✅ Fix: added missing slash in the random cover path
+/**
+ * ✅ Pick a random interview cover (fixed missing slash bug)
+ */
 export const getRandomInterviewCover = () => {
     const randomIndex = Math.floor(Math.random() * interviewCovers.length);
     return `/covers/${interviewCovers[randomIndex]}`;

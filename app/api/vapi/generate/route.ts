@@ -10,7 +10,6 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "*",
 };
 
-// ✅ Handle preflight requests
 export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
@@ -28,9 +27,14 @@ function extractVapiArgs(body: any) {
             msg.assistant?.variableValues ||
             msg.call?.assistantOverrides?.variableValues ||
             {};
-        return { args: tool, assistantVars };
+        const transcript =
+            msg?.artifact?.messages
+                ?.map((m: any) => m.content)
+                ?.join(" ")
+                ?.trim() || "";
+        return { args: tool, assistantVars, transcript };
     }
-    return { args: body ?? {}, assistantVars: {} };
+    return { args: body ?? {}, assistantVars: {}, transcript: "" };
 }
 
 // --- clean string helper ---
@@ -38,7 +42,7 @@ function cleanStr(s?: string) {
     return typeof s === "string" ? s.trim() : "";
 }
 
-// --- safely parse AI output ---
+// --- safely parse Gemini output ---
 function parseQuestionsSafe(raw: string): string[] {
     try {
         const parsed = JSON.parse(raw);
@@ -59,37 +63,43 @@ function parseQuestionsSafe(raw: string): string[] {
         .filter(Boolean);
 }
 
-// --- fallback inference helper ---
-async function inferMissingFields(inputText: string, fallback: any) {
+// --- Gemini inference helper ---
+async function inferMissingFields(transcript: string, fallback: any) {
+    if (!transcript) return fallback;
+
     const prompt = `
-You are a helper AI. Infer missing job interview parameters.
+You are a JSON-only AI parser. 
+Extract job interview details (role, level, techstack) from the transcript below.
 
-Input description:
-${inputText}
+Transcript:
+"""
+${transcript}
+"""
 
-Return a JSON object with:
+Return ONLY a valid JSON object, for example:
 {
-  "role": "Frontend Developer",
-  "techstack": "React, Next.js",
+  "role": "Backend Developer",
+  "techstack": "Node.js, Express.js, MongoDB",
   "level": "junior"
 }
 
-Use defaults if not specified.
+If something is not mentioned, infer the most likely default.
 `;
 
-    const { text } = await generateText({
-        model: google("gemini-2.0-flash-001"),
-        prompt,
-    });
-
     try {
-        const inferred = JSON.parse(text);
+        const { text } = await generateText({
+            model: google("gemini-2.0-flash-001"),
+            prompt,
+        });
+
+        const parsed = JSON.parse(text);
         return {
-            role: inferred.role || fallback.role,
-            techstack: inferred.techstack || fallback.techstack,
-            level: inferred.level || fallback.level,
+            role: parsed.role || fallback.role,
+            techstack: parsed.techstack || fallback.techstack,
+            level: parsed.level || fallback.level,
         };
-    } catch {
+    } catch (err) {
+        console.warn("⚠️ Inference failed, using fallback");
         return fallback;
     }
 }
@@ -99,7 +109,7 @@ export async function POST(request: Request) {
         const body = await request.json();
         console.log("📥 Incoming request body:", body);
 
-        const { args, assistantVars } = extractVapiArgs(body);
+        const { args, assistantVars, transcript } = extractVapiArgs(body);
 
         let {
             role = "unknown",
@@ -110,15 +120,12 @@ export async function POST(request: Request) {
             userid,
         } = args ?? {};
 
-        if (!userid) userid = assistantVars?.userid;
-        userid = userid ?? "anonymous";
+        if (!userid) userid = assistantVars?.userid ?? "anonymous";
 
-        // 🧠 infer missing fields if not provided
-        const transcriptText =
-            JSON.stringify(body?.message?.artifact?.messages || []) ?? "";
-        if (!role || role === "unknown" || !techstack) {
+        // 🧠 Use Gemini to infer missing fields from speech transcript
+        if (!role || role === "unknown" || !techstack || !level) {
             console.log("🤔 Missing fields, inferring from transcript...");
-            const inferred = await inferMissingFields(transcriptText, {
+            const inferred = await inferMissingFields(transcript, {
                 role,
                 techstack,
                 level,
