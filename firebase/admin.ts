@@ -11,16 +11,19 @@ function initFirebaseAdmin() {
             credential: cert({
                 projectId: process.env.FIREBASE_PROJECT_ID,
                 clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-                // Replace newlines in the private key
+                // Replace newlines in the private key (required for multiline env vars)
                 privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
             }),
         });
     }
 
-    return {
-        auth: getAuth(),
-        db: getFirestore(),
-    };
+    const auth = getAuth();
+    const db = getFirestore();
+
+    // ✅ Global fix: Ignore undefined Firestore values
+    db.settings({ ignoreUndefinedProperties: true });
+
+    return { auth, db };
 }
 
 export const { auth, db } = initFirebaseAdmin();
