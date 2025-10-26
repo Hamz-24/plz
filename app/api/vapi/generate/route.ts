@@ -15,7 +15,7 @@ export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
-// --- helper to unwrap Vapi's tool call structure ---
+// --- helper to unwrap Vapi's nested payload ---
 function extractVapiArgs(body: any) {
     const msg = body?.message;
     if (msg?.type === "tool-calls") {
@@ -33,7 +33,67 @@ function extractVapiArgs(body: any) {
     return { args: body ?? {}, assistantVars: {} };
 }
 
-// --- main handler ---
+// --- clean string helper ---
+function cleanStr(s?: string) {
+    return typeof s === "string" ? s.trim() : "";
+}
+
+// --- safely parse AI output ---
+function parseQuestionsSafe(raw: string): string[] {
+    try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.map(String);
+    } catch (_) {}
+
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (match) {
+        try {
+            const arr = JSON.parse(match[0]);
+            if (Array.isArray(arr)) return arr.map(String);
+        } catch (_) {}
+    }
+
+    return raw
+        .split(/\r?\n+/)
+        .map((s) => s.replace(/^[\-\*\d\.\)\s]+/, "").trim())
+        .filter(Boolean);
+}
+
+// --- fallback inference helper ---
+async function inferMissingFields(inputText: string, fallback: any) {
+    const prompt = `
+You are a helper AI. Infer missing job interview parameters.
+
+Input description:
+${inputText}
+
+Return a JSON object with:
+{
+  "role": "Frontend Developer",
+  "techstack": "React, Next.js",
+  "level": "junior"
+}
+
+Use defaults if not specified.
+`;
+
+    const { text } = await generateText({
+        model: google("gemini-2.0-flash-001"),
+        prompt,
+    });
+
+    try {
+        const inferred = JSON.parse(text);
+        return {
+            role: inferred.role || fallback.role,
+            techstack: inferred.techstack || fallback.techstack,
+            level: inferred.level || fallback.level,
+        };
+    } catch {
+        return fallback;
+    }
+}
+
 export async function POST(request: Request) {
     try {
         const body = await request.json();
@@ -41,7 +101,6 @@ export async function POST(request: Request) {
 
         const { args, assistantVars } = extractVapiArgs(body);
 
-        // ✅ Safely extract with fallbacks
         let {
             role = "unknown",
             type = "technical",
@@ -51,12 +110,25 @@ export async function POST(request: Request) {
             userid,
         } = args ?? {};
 
-        // If missing in args, fallback to assistant variables
         if (!userid) userid = assistantVars?.userid;
-
         userid = userid ?? "anonymous";
 
-        console.log("🧩 Extracted params:", {
+        // 🧠 infer missing fields if not provided
+        const transcriptText =
+            JSON.stringify(body?.message?.artifact?.messages || []) ?? "";
+        if (!role || role === "unknown" || !techstack) {
+            console.log("🤔 Missing fields, inferring from transcript...");
+            const inferred = await inferMissingFields(transcriptText, {
+                role,
+                techstack,
+                level,
+            });
+            role = inferred.role;
+            techstack = inferred.techstack;
+            level = inferred.level;
+        }
+
+        console.log("🧩 Final extracted params:", {
             role,
             type,
             level,
@@ -65,45 +137,36 @@ export async function POST(request: Request) {
             userid,
         });
 
-        // 🧠 Generate interview questions using Gemini
+        // 🧠 Generate interview questions
         const { text: geminiOutput } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
-        Prepare ${amount} ${type} interview questions for a ${level} ${role}.
-        Focus on the following technologies: ${techstack}.
-        Return ONLY a pure JSON array like:
-        ["Question 1", "Question 2", "Question 3"]
+Prepare ${amount} ${type} interview questions for a ${level} ${role}.
+Focus on the following technologies: ${techstack}.
+Return ONLY a valid JSON array, e.g.:
+["Question 1", "Question 2", "Question 3"]
       `,
         });
 
         console.log("🧠 Gemini output:", geminiOutput);
 
-        // ✅ Parse the AI output safely
-        let parsedQuestions: string[] = [];
-        try {
-            const maybeArray = JSON.parse(geminiOutput);
-            if (Array.isArray(maybeArray)) parsedQuestions = maybeArray;
-        } catch {
-            // If not valid JSON, split by newlines
-            const match = geminiOutput.match(/\[[\s\S]*\]/);
-            if (match) {
-                try {
-                    parsedQuestions = JSON.parse(match[0]);
-                } catch {}
-            }
-            if (parsedQuestions.length === 0) {
-                parsedQuestions = geminiOutput
-                    .split(/\r?\n+/)
-                    .map((q) => q.replace(/^[\-\*\d\.\)\s]+/, "").trim())
-                    .filter(Boolean);
-            }
+        let parsedQuestions = parseQuestionsSafe(geminiOutput);
+
+        // 🔁 fallback if Gemini returned nothing
+        if (!parsedQuestions.length) {
+            console.warn("⚠️ Gemini returned empty — regenerating fallback questions...");
+            const { text: backup } = await generateText({
+                model: google("gemini-2.0-flash-001"),
+                prompt: `Give 5 generic ${type} interview questions for a ${level} ${role}. Return as ["Q1","Q2","Q3"].`,
+            });
+            parsedQuestions = parseQuestionsSafe(backup);
         }
 
-        // ✅ Construct Firestore-friendly object
+        // ✅ Construct Firestore object
         const interview = {
-            role,
-            type,
-            level,
+            role: cleanStr(role),
+            type: cleanStr(type),
+            level: cleanStr(level),
             techstack:
                 typeof techstack === "string"
                     ? techstack.split(",").map((t) => t.trim()).filter(Boolean)
@@ -115,7 +178,7 @@ export async function POST(request: Request) {
             createdAt: new Date().toISOString(),
         };
 
-        // ✅ Sanitize before saving
+        // ✅ Remove undefined or empty values
         const sanitized: Record<string, any> = {};
         for (const [key, val] of Object.entries(interview)) {
             if (
@@ -128,7 +191,6 @@ export async function POST(request: Request) {
         }
 
         console.log("💾 Saving to Firestore:", sanitized);
-
         await db.collection("interviews").add(sanitized);
 
         return new NextResponse(
