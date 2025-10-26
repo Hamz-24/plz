@@ -10,6 +10,7 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "*",
 };
 
+// Handle preflight requests
 export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
@@ -28,10 +29,7 @@ function extractVapiArgs(body: any) {
             msg.call?.assistantOverrides?.variableValues ||
             {};
         const transcript =
-            msg?.artifact?.messages
-                ?.map((m: any) => m.content)
-                ?.join(" ")
-                ?.trim() || "";
+            msg?.artifact?.messages?.map((m: any) => m.content)?.join(" ")?.trim() || "";
         return { args: tool, assistantVars, transcript };
     }
     return { args: body ?? {}, assistantVars: {}, transcript: "" };
@@ -68,22 +66,23 @@ async function inferMissingFields(transcript: string, fallback: any) {
     if (!transcript) return fallback;
 
     const prompt = `
-You are a JSON-only AI parser. 
-Extract job interview details (role, level, techstack) from the transcript below.
+You are a precise JSON-only AI.
+Extract interview-related details (role, techstack, level, type, and amount) from this transcript.
 
 Transcript:
 """
 ${transcript}
 """
 
-Return ONLY a valid JSON object, for example:
+Return ONLY valid JSON, like:
 {
   "role": "Backend Developer",
   "techstack": "Node.js, Express.js, MongoDB",
-  "level": "junior"
+  "level": "mid",
+  "type": "technical",
+  "amount": "7"
 }
-
-If something is not mentioned, infer the most likely default.
+If something isn’t explicitly said, leave it out — do NOT guess or add defaults.
 `;
 
     try {
@@ -94,9 +93,11 @@ If something is not mentioned, infer the most likely default.
 
         const parsed = JSON.parse(text);
         return {
-            role: parsed.role || fallback.role,
-            techstack: parsed.techstack || fallback.techstack,
-            level: parsed.level || fallback.level,
+            role: parsed.role ?? fallback.role,
+            techstack: parsed.techstack ?? fallback.techstack,
+            level: parsed.level ?? fallback.level,
+            type: parsed.type ?? fallback.type,
+            amount: parsed.amount ?? fallback.amount,
         };
     } catch (err) {
         console.warn("⚠️ Inference failed, using fallback");
@@ -111,28 +112,25 @@ export async function POST(request: Request) {
 
         const { args, assistantVars, transcript } = extractVapiArgs(body);
 
-        let {
-            role = "unknown",
-            type = "technical",
-            level = "junior",
-            techstack = "",
-            amount = "5",
-            userid,
-        } = args ?? {};
-
+        // 🧩 Extract only what exists — don’t assign defaults
+        let { role, type, level, techstack, amount, userid } = args ?? {};
         if (!userid) userid = assistantVars?.userid ?? "anonymous";
 
-        // 🧠 Use Gemini to infer missing fields from speech transcript
-        if (!role || role === "unknown" || !techstack || !level) {
+        // 🧠 Try inferring from transcript if missing
+        if (!role || !techstack || !type || !level || !amount) {
             console.log("🤔 Missing fields, inferring from transcript...");
             const inferred = await inferMissingFields(transcript, {
                 role,
-                techstack,
+                type,
                 level,
+                techstack,
+                amount,
             });
             role = inferred.role;
-            techstack = inferred.techstack;
+            type = inferred.type;
             level = inferred.level;
+            techstack = inferred.techstack;
+            amount = inferred.amount;
         }
 
         console.log("🧩 Final extracted params:", {
@@ -148,9 +146,11 @@ export async function POST(request: Request) {
         const { text: geminiOutput } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
-Prepare ${amount} ${type} interview questions for a ${level} ${role}.
-Focus on the following technologies: ${techstack}.
-Return ONLY a valid JSON array, e.g.:
+Prepare ${amount || 5} ${type || "technical"} interview questions for a ${
+                level || ""
+            } ${role || ""}.
+Focus on these technologies: ${techstack || ""}.
+Return ONLY a valid JSON array like:
 ["Question 1", "Question 2", "Question 3"]
       `,
         });
@@ -159,25 +159,26 @@ Return ONLY a valid JSON array, e.g.:
 
         let parsedQuestions = parseQuestionsSafe(geminiOutput);
 
-        // 🔁 fallback if Gemini returned nothing
         if (!parsedQuestions.length) {
             console.warn("⚠️ Gemini returned empty — regenerating fallback questions...");
             const { text: backup } = await generateText({
                 model: google("gemini-2.0-flash-001"),
-                prompt: `Give 5 generic ${type} interview questions for a ${level} ${role}. Return as ["Q1","Q2","Q3"].`,
+                prompt: `Give 5 general interview questions for ${role || "the given role"}. Return as ["Q1","Q2","Q3"].`,
             });
             parsedQuestions = parseQuestionsSafe(backup);
         }
 
         // ✅ Construct Firestore object
         const interview = {
-            role: cleanStr(role),
-            type: cleanStr(type),
-            level: cleanStr(level),
-            techstack:
-                typeof techstack === "string"
-                    ? techstack.split(",").map((t) => t.trim()).filter(Boolean)
-                    : [],
+            ...(role && { role: cleanStr(role) }),
+            ...(type && { type: cleanStr(type) }),
+            ...(level && { level: cleanStr(level) }),
+            ...(techstack && {
+                techstack:
+                    typeof techstack === "string"
+                        ? techstack.split(",").map((t) => t.trim()).filter(Boolean)
+                        : [],
+            }),
             questions: parsedQuestions,
             userId: userid,
             finalized: true,
@@ -185,25 +186,13 @@ Return ONLY a valid JSON array, e.g.:
             createdAt: new Date().toISOString(),
         };
 
-        // ✅ Remove undefined or empty values
-        const sanitized: Record<string, any> = {};
-        for (const [key, val] of Object.entries(interview)) {
-            if (
-                val !== undefined &&
-                val !== null &&
-                !(Array.isArray(val) && val.length === 0)
-            ) {
-                sanitized[key] = val;
-            }
-        }
+        console.log("💾 Saving to Firestore:", interview);
+        await db.collection("interviews").add(interview);
 
-        console.log("💾 Saving to Firestore:", sanitized);
-        await db.collection("interviews").add(sanitized);
-
-        return new NextResponse(
-            JSON.stringify({ success: true, data: sanitized }),
-            { status: 200, headers: corsHeaders }
-        );
+        return new NextResponse(JSON.stringify({ success: true, data: interview }), {
+            status: 200,
+            headers: corsHeaders,
+        });
     } catch (error: any) {
         console.error("❌ Error in /api/vapi/generate:", error);
         return new NextResponse(
