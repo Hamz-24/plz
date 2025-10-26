@@ -10,7 +10,6 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "*",
 };
 
-// Handle preflight requests
 export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
@@ -113,11 +112,24 @@ export async function POST(request: Request) {
 
         const { args, assistantVars, transcript } = extractVapiArgs(body);
 
-        // 🧩 Extract only what exists — no defaults
         let { role, type, level, techstack, amount, userid } = args ?? {};
         if (!userid) userid = assistantVars?.userid ?? "anonymous";
 
-        // 🧠 Infer missing fields only if absolutely necessary
+        // --- Early validation: clearer logs for missing Structured Data
+        if (!role && !type && !level && !techstack && !amount) {
+            console.error("❌ Missing parameters: Structured Data not attached or empty.");
+            return new NextResponse(
+                JSON.stringify({
+                    success: false,
+                    message:
+                        "Structured Data fields are missing. Make sure 'role', 'type', 'level', 'techstack', and 'amount' are passed from the assistant.",
+                    received: { role, type, level, techstack, amount },
+                }),
+                { status: 400, headers: corsHeaders }
+            );
+        }
+
+        // --- Try inferring missing bits only if partial data missing
         if (!role || !techstack || !type || !level || !amount) {
             console.log("🤔 Missing fields, inferring from transcript...");
             const inferred = await inferMissingFields(transcript, {
@@ -149,7 +161,8 @@ export async function POST(request: Request) {
             return new NextResponse(
                 JSON.stringify({
                     success: false,
-                    message: "Missing required interview details from Vapi Structured Data.",
+                    message: "Missing required interview details after inference.",
+                    received: { role, type, level, techstack, amount },
                 }),
                 { status: 400, headers: corsHeaders }
             );
@@ -178,7 +191,7 @@ Return ONLY a valid JSON array like:
             parsedQuestions = parseQuestionsSafe(backup);
         }
 
-        // ✅ Build Firestore object (no undefineds)
+        // ✅ Construct Firestore document
         const interview: Record<string, any> = {
             role: cleanStr(role),
             type: cleanStr(type),
@@ -195,7 +208,7 @@ Return ONLY a valid JSON array like:
             createdAt: new Date().toISOString(),
         };
 
-        // ✅ Remove undefined / empty fields
+        // ✅ Remove empty fields
         Object.keys(interview).forEach(
             (key) =>
                 (interview[key] === undefined ||
