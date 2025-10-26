@@ -37,7 +37,7 @@ function extractVapiArgs(body: any) {
 
 // --- clean string helper ---
 function cleanStr(s?: string) {
-    return typeof s === "string" ? s.trim() : "";
+    return typeof s === "string" ? s.trim() : undefined;
 }
 
 // --- safely parse Gemini output ---
@@ -82,7 +82,8 @@ Return ONLY valid JSON, like:
   "type": "technical",
   "amount": "7"
 }
-If something isn’t explicitly said, leave it out — do NOT guess or add defaults.
+
+If something isn’t explicitly said, leave it blank (do NOT guess or add defaults).
 `;
 
     try {
@@ -112,11 +113,11 @@ export async function POST(request: Request) {
 
         const { args, assistantVars, transcript } = extractVapiArgs(body);
 
-        // 🧩 Extract only what exists — don’t assign defaults
+        // 🧩 Extract only what exists — no defaults
         let { role, type, level, techstack, amount, userid } = args ?? {};
         if (!userid) userid = assistantVars?.userid ?? "anonymous";
 
-        // 🧠 Try inferring from transcript if missing
+        // 🧠 Infer missing fields only if absolutely necessary
         if (!role || !techstack || !type || !level || !amount) {
             console.log("🤔 Missing fields, inferring from transcript...");
             const inferred = await inferMissingFields(transcript, {
@@ -142,49 +143,67 @@ export async function POST(request: Request) {
             userid,
         });
 
+        // 🛑 Stop early if any required field is missing
+        if (!role || !type || !level || !techstack || !amount) {
+            console.error("❌ Missing parameters: cannot generate interview.");
+            return new NextResponse(
+                JSON.stringify({
+                    success: false,
+                    message: "Missing required interview details from Vapi Structured Data.",
+                }),
+                { status: 400, headers: corsHeaders }
+            );
+        }
+
         // 🧠 Generate interview questions
         const { text: geminiOutput } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
-Prepare ${amount || 5} ${type || "technical"} interview questions for a ${
-                level || ""
-            } ${role || ""}.
-Focus on these technologies: ${techstack || ""}.
+Prepare ${amount} ${type} interview questions for a ${level} ${role}.
+Focus on these technologies: ${techstack}.
 Return ONLY a valid JSON array like:
 ["Question 1", "Question 2", "Question 3"]
       `,
         });
 
         console.log("🧠 Gemini output:", geminiOutput);
-
         let parsedQuestions = parseQuestionsSafe(geminiOutput);
 
         if (!parsedQuestions.length) {
             console.warn("⚠️ Gemini returned empty — regenerating fallback questions...");
             const { text: backup } = await generateText({
                 model: google("gemini-2.0-flash-001"),
-                prompt: `Give 5 general interview questions for ${role || "the given role"}. Return as ["Q1","Q2","Q3"].`,
+                prompt: `Give 5 general interview questions for ${role}. Return as ["Q1","Q2","Q3"].`,
             });
             parsedQuestions = parseQuestionsSafe(backup);
         }
 
-        // ✅ Construct Firestore object
-        const interview = {
-            ...(role && { role: cleanStr(role) }),
-            ...(type && { type: cleanStr(type) }),
-            ...(level && { level: cleanStr(level) }),
-            ...(techstack && {
-                techstack:
-                    typeof techstack === "string"
-                        ? techstack.split(",").map((t) => t.trim()).filter(Boolean)
-                        : [],
-            }),
+        // ✅ Build Firestore object (no undefineds)
+        const interview: Record<string, any> = {
+            role: cleanStr(role),
+            type: cleanStr(type),
+            level: cleanStr(level),
+            techstack:
+                typeof techstack === "string"
+                    ? techstack.split(",").map((t) => t.trim()).filter(Boolean)
+                    : [],
+            amount: cleanStr(amount),
             questions: parsedQuestions,
             userId: userid,
             finalized: true,
             coverImage: getRandomInterviewCover(),
             createdAt: new Date().toISOString(),
         };
+
+        // ✅ Remove undefined / empty fields
+        Object.keys(interview).forEach(
+            (key) =>
+                (interview[key] === undefined ||
+                    interview[key] === null ||
+                    interview[key] === "" ||
+                    (Array.isArray(interview[key]) && !interview[key].length)) &&
+                delete interview[key]
+        );
 
         console.log("💾 Saving to Firestore:", interview);
         await db.collection("interviews").add(interview);
