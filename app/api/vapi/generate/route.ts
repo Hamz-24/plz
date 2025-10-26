@@ -15,58 +15,98 @@ export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
+// --- helper to unwrap Vapi's tool call structure ---
+function extractVapiArgs(body: any) {
+    const msg = body?.message;
+    if (msg?.type === "tool-calls") {
+        const tool =
+            msg.toolCalls?.[0]?.args ||
+            msg.toolCallList?.[0]?.args ||
+            msg.toolWithToolCallList?.[0]?.toolCall?.args ||
+            {};
+        const assistantVars =
+            msg.assistant?.variableValues ||
+            msg.call?.assistantOverrides?.variableValues ||
+            {};
+        return { args: tool, assistantVars };
+    }
+    return { args: body ?? {}, assistantVars: {} };
+}
+
+// --- main handler ---
 export async function POST(request: Request) {
     try {
         const body = await request.json();
         console.log("📥 Incoming request body:", body);
 
-        const {
-            type = "technical",
+        const { args, assistantVars } = extractVapiArgs(body);
+
+        // ✅ Safely extract with fallbacks
+        let {
             role = "unknown",
+            type = "technical",
             level = "junior",
             techstack = "",
             amount = "5",
-            userid = "anonymous", // 🔥 lowercase
-        } = body ?? {};
+            userid,
+        } = args ?? {};
 
-        console.log("🧩 Extracted userid:", userid);
+        // If missing in args, fallback to assistant variables
+        if (!userid) userid = assistantVars?.userid;
 
-        // 🧠 Generate questions
-        const { text: questions } = await generateText({
-            model: google("gemini-2.0-flash-001"),
-            prompt: `
-      Prepare questions for a job interview.
-      The job role is ${role}.
-      The job experience level is ${level}.
-      The tech stack used in the job is: ${techstack}.
-      The focus between behavioural and technical questions should lean towards: ${type}.
-      The amount of questions required is: ${amount}.
-      Please return only the questions, formatted like this:
-      ["Question 1", "Question 2"]
-    `,
+        userid = userid ?? "anonymous";
+
+        console.log("🧩 Extracted params:", {
+            role,
+            type,
+            level,
+            techstack,
+            amount,
+            userid,
         });
 
-        console.log("🧠 Gemini output:", questions);
+        // 🧠 Generate interview questions using Gemini
+        const { text: geminiOutput } = await generateText({
+            model: google("gemini-2.0-flash-001"),
+            prompt: `
+        Prepare ${amount} ${type} interview questions for a ${level} ${role}.
+        Focus on the following technologies: ${techstack}.
+        Return ONLY a pure JSON array like:
+        ["Question 1", "Question 2", "Question 3"]
+      `,
+        });
 
-        // ✅ Safe parsing of AI output
-        let parsedQuestions: string[];
+        console.log("🧠 Gemini output:", geminiOutput);
+
+        // ✅ Parse the AI output safely
+        let parsedQuestions: string[] = [];
         try {
-            parsedQuestions = JSON.parse(questions);
+            const maybeArray = JSON.parse(geminiOutput);
+            if (Array.isArray(maybeArray)) parsedQuestions = maybeArray;
         } catch {
-            parsedQuestions = questions
-                .split(/\n+/)
-                .map((q) => q.replace(/^\d+\.?\s*/, "").trim())
-                .filter(Boolean);
+            // If not valid JSON, split by newlines
+            const match = geminiOutput.match(/\[[\s\S]*\]/);
+            if (match) {
+                try {
+                    parsedQuestions = JSON.parse(match[0]);
+                } catch {}
+            }
+            if (parsedQuestions.length === 0) {
+                parsedQuestions = geminiOutput
+                    .split(/\r?\n+/)
+                    .map((q) => q.replace(/^[\-\*\d\.\)\s]+/, "").trim())
+                    .filter(Boolean);
+            }
         }
 
-        // ✅ Build interview object safely
+        // ✅ Construct Firestore-friendly object
         const interview = {
             role,
             type,
             level,
             techstack:
                 typeof techstack === "string"
-                    ? techstack.split(",").map((t) => t.trim())
+                    ? techstack.split(",").map((t) => t.trim()).filter(Boolean)
                     : [],
             questions: parsedQuestions,
             userId: userid,
@@ -75,24 +115,24 @@ export async function POST(request: Request) {
             createdAt: new Date().toISOString(),
         };
 
-        // ✅ Remove undefined or empty values (to avoid Firestore rejection)
-        const sanitizedInterview: Record<string, any> = {};
-        for (const [key, value] of Object.entries(interview)) {
+        // ✅ Sanitize before saving
+        const sanitized: Record<string, any> = {};
+        for (const [key, val] of Object.entries(interview)) {
             if (
-                value !== undefined &&
-                value !== null &&
-                !(Array.isArray(value) && value.length === 0)
+                val !== undefined &&
+                val !== null &&
+                !(Array.isArray(val) && val.length === 0)
             ) {
-                sanitizedInterview[key] = value;
+                sanitized[key] = val;
             }
         }
 
-        console.log("💾 Saving to Firestore:", sanitizedInterview);
+        console.log("💾 Saving to Firestore:", sanitized);
 
-        await db.collection("interviews").add(sanitizedInterview);
+        await db.collection("interviews").add(sanitized);
 
         return new NextResponse(
-            JSON.stringify({ success: true, data: sanitizedInterview }),
+            JSON.stringify({ success: true, data: sanitized }),
             { status: 200, headers: corsHeaders }
         );
     } catch (error: any) {
@@ -111,10 +151,7 @@ export async function POST(request: Request) {
 
 export async function GET() {
     return new NextResponse(
-        JSON.stringify({
-            success: true,
-            message: "API is working fine ✅",
-        }),
+        JSON.stringify({ success: true, message: "API is working fine ✅" }),
         { status: 200, headers: corsHeaders }
     );
 }
