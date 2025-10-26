@@ -10,7 +10,7 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "*",
 };
 
-// ✅ Handle preflight requests
+// ✅ Handle preflight (CORS)
 export async function OPTIONS() {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
@@ -18,20 +18,22 @@ export async function OPTIONS() {
 export async function POST(request: Request) {
     try {
         const body = await request.json();
+        console.log("📥 Incoming request body:", body);
 
-        // 🧩 Apply safe defaults (avoid undefined)
+        // ✅ Destructure safely and match Vapi variable casing
         const {
             type = "technical",
             role = "unknown",
             level = "junior",
             techstack = "",
             amount = "5",
-            userid = "anonymous",
-        } = body ?? {};
+            userid = "anonymous", // <-- lowercase to match your Vapi variable
+        } = body || {};
 
-        console.log("📥 Received:", body);
+        // 🔍 Confirm user ID received
+        console.log("🧩 Extracted userid:", userid);
 
-        // 🧠 Generate questions
+        // 🧠 Generate interview questions
         const { text: questions } = await generateText({
             model: google("gemini-2.0-flash-001"),
             prompt: `
@@ -50,7 +52,7 @@ export async function POST(request: Request) {
         console.log("🧠 Gemini output:", questions);
 
         // ✅ Safe parse
-        let parsedQuestions;
+        let parsedQuestions: string[];
         try {
             parsedQuestions = JSON.parse(questions);
         } catch {
@@ -60,22 +62,23 @@ export async function POST(request: Request) {
                 .filter(Boolean);
         }
 
-        // ✅ Create interview object (safe)
+        // ✅ Create Firestore record (no undefineds)
         const interview = {
             role,
             type,
             level,
-            techstack: typeof techstack === "string"
-                ? techstack.split(",").map((t) => t.trim())
-                : [],
+            techstack:
+                typeof techstack === "string"
+                    ? techstack.split(",").map((t) => t.trim())
+                    : [],
             questions: parsedQuestions,
-            userId: userid,
+            userId: userid, // ✅ use lowercase key from Vapi
             finalized: true,
             coverImage: getRandomInterviewCover(),
             createdAt: new Date().toISOString(),
         };
 
-        console.log("💾 Saving to Firestore:", interview);
+        console.log("💾 Saving interview to Firestore:", interview);
 
         await db.collection("interviews").add(interview);
 
@@ -84,7 +87,7 @@ export async function POST(request: Request) {
             { status: 200, headers: corsHeaders }
         );
     } catch (error: any) {
-        console.error("❌ Error in /vapi/generate:", error);
+        console.error("❌ Error in /api/vapi/generate:", error);
         return new NextResponse(
             JSON.stringify({
                 success: false,
@@ -97,6 +100,7 @@ export async function POST(request: Request) {
     }
 }
 
+// ✅ Health check
 export async function GET() {
     return new NextResponse(
         JSON.stringify({
